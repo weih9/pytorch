@@ -30,7 +30,14 @@ from torch.utils._sympy.symbol import free_symbol_is_type, symbol_is_type, SymT
 from torch.utils._sympy.value_ranges import bound_sympy, ValueRangeAnalysis, ValueRanges
 
 from .. import config, metrics
-from ..utils import DeferredLineBase, IndentedBuffer, sympy_dot, sympy_subs, unique
+from ..utils import (
+    DeferredLineBase,
+    generate_assert,
+    IndentedBuffer,
+    sympy_dot,
+    sympy_subs,
+    unique,
+)
 from ..virtualized import ops, OpsHandler, OpsValue, ReductionType, StoreMode, V
 
 
@@ -1245,7 +1252,16 @@ class CSE:
 
 
 class IndirectAssertLine(DeferredLineBase):
-    def __init__(self, line, indirect_assert, var, mask, size_map):
+    def __init__(
+        self,
+        line: str,
+        indirect_assert: Callable[
+            [CSEVariable, Optional[str], Optional[str], Optional[str]], str
+        ],
+        var: CSEVariable,
+        mask: str,
+        size_map: Dict[Tuple[CSEVariable, str], Tuple[sympy.Expr, str]],
+    ):
         super().__init__(line)
         self.var = var
         self.mask = mask
@@ -1257,7 +1273,10 @@ class IndirectAssertLine(DeferredLineBase):
 
         # We assert if we've not been able to prove the bound
         assert_min = (self.var.bounds.lower >= 0) != sympy.true
-        assert_max = (self.var.bounds.upper < size) != sympy.true
+        assert_max = (
+            not isinstance(size, sympy.Number)
+            or (self.var.bounds.upper < size) != sympy.true
+        )
 
         lower = None
         upper = None
@@ -1344,7 +1363,7 @@ class Kernel(CodeGen):
         # NB: None, None is never stored in map, but it is the assumed
         # "not set" value for the dict
         self.indirect_max_sizes: Dict[
-            Tuple[CSEVariable, str], Union[Tuple[sympy.Expr, str], Tuple[None, None]]
+            Tuple[CSEVariable, str], Tuple[sympy.Expr, str]
         ] = {}
 
         self.removed_buffers = set()
@@ -1435,6 +1454,9 @@ class Kernel(CodeGen):
     ) -> Tuple[CSEVariable, ...]:
         raise NotImplementedError
 
+    def var_ranges(self):
+        raise NotImplementedError
+
     def bucketize(
         self,
         values: CSEVariable,
@@ -1452,7 +1474,13 @@ class Kernel(CodeGen):
     def assert_function(self) -> str:
         raise NotImplementedError
 
-    def indirect_assert(self, var, lower, upper, mask=None):
+    def indirect_assert(
+        self,
+        var: Union[CSEVariable, str],
+        lower: Optional[str],
+        upper: Optional[str],
+        mask: Optional[str] = None,
+    ) -> str:
         if lower and upper:
             # The conditions need to be in parens because of Python's operator precedence.
             # It'd be less error-prone to use and/or/not, which is suported by triton
@@ -1541,11 +1569,21 @@ class Kernel(CodeGen):
 
             @staticmethod
             def indirect_indexing(
-                var: CSEVariable, size: sympy.Expr, check: bool = True
+                var: CSEVariable, size: Union[sympy.Expr, int], check: bool = True
             ):
+                if isinstance(size, int):
+                    size = sympy.Integer(size)
+                assert isinstance(size, sympy.Expr), size
                 # Skip CSE since this doesn't return an expression
 
                 if var.bounds.lower < 0:  # type: ignore[operator]
+                    stm = ops.add(var, ops.index_expr(size, torch.long))
+                    # Mixed negative and non-negative
+                    if var.bounds.upper >= 0:  # type: ignore[operator]
+                        lt = ops.lt(var, 0)
+                        stm = ops.where(lt, stm, var)
+
+                    # Propagate bounds as we know how to compute them properly
                     new_bounds = ValueRanges.unknown()
                     if var.bounds != ValueRanges.unknown() and isinstance(
                         size, sympy.Number
@@ -1553,24 +1591,21 @@ class Kernel(CodeGen):
                         # Take the negative part of the bound and add size to it
                         # Then take union of that and the positive part
                         # This is a tighter bound than that of a generic ops.where, as we have info on the cond
-                        neg = var.bounds & ValueRanges(-sympy.oo, -1)
-                        new_bounds = ValueRanges(neg.lower + size, neg.upper + size)
+                        neg_bounds = var.bounds & ValueRanges(-sympy.oo, -1)
+                        new_bounds = ValueRanges(
+                            neg_bounds.lower + size, neg_bounds.upper + size
+                        )
                         # We don't have a good way of representing the empty range
                         if var.bounds.upper >= 0:  # type: ignore[operator]
                             pos = var.bounds & ValueRanges(0, sympy.oo)
                             new_bounds = new_bounds | pos
 
-                    stm = ops.add(var, self.rename_indexing(size))
-                    # Mixed negative and non-negative
-                    if var.bounds.upper >= 0:  # type: ignore[operator]
-                        lt = ops.lt(var, 0)
-                        stm = ops.where(lt, stm, var)
                     new_var = self.cse.generate(self.compute, stm, bounds=new_bounds)
-
+                    # Propagate the mask as mask propagation when using where is not correct
                     new_var.update_on_args("index_wrap", (var,), {})
                     var = new_var
 
-                if self.generate_assert(check):
+                if generate_assert(check):
                     mask = self.load_mask(var)
 
                     # An assertion line may have been written already, if so just
@@ -1594,6 +1629,17 @@ class Kernel(CodeGen):
 
                     self.indirect_max_sizes[map_key] = (size, self.index_to_str(size))
                 return parent_handler.indirect_indexing(var, size, check)
+
+            @staticmethod
+            def check_bounds(var: CSEVariable, size: sympy.Expr):
+                size = self.sexpr(self.rename_indexing(size))  # type: ignore[attr-defined]
+                maybe_mask_str = None
+                if hasattr(var, "mask_vars") and var.mask_vars:
+                    maybe_mask_str = " & ".join(sorted(map(str, var.mask_vars)))
+                # expr is already wrapped
+                self.compute.writeline(
+                    self.indirect_assert(str(var), "0", size, maybe_mask_str)
+                )
 
             @staticmethod
             def load(name: str, index: sympy.Expr) -> CSEVariable:
@@ -1699,9 +1745,6 @@ class Kernel(CodeGen):
         if V.graph.scheduler:
             V.graph.scheduler.remove_kernel_local_buffers()
         super().__exit__(exc_type, exc_val, exc_tb)
-
-    def generate_assert(self, check):
-        return (check or config.debug_index_asserts) and config.assert_indirect_indexing
 
     def load_mask(self, var) -> str:
         # only the triton kernel requires mask
