@@ -110,6 +110,9 @@ aten::_fake_quantize_learnable_per_tensor_affine.out
 aten::_fake_quantize_learnable_per_tensor_affine_backward
 aten::_fake_quantize_per_tensor_affine_cachemask_tensor_qparams
 aten::_fake_quantize_per_tensor_affine_cachemask_tensor_qparams.out
+aten::_fbgemm_dense_to_jagged_forward
+aten::_fbgemm_jagged_to_padded_dense_backward
+aten::_fbgemm_jagged_to_padded_dense_forward
 aten::_fft_c2c
 aten::_fft_c2c.out
 aten::_fft_c2r
