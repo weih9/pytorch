@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Set
 from tools.stats.import_test_stats import (
     ADDITIONAL_CI_FILES_FOLDER,
     TD_HEURISTIC_PREVIOUSLY_FAILED,
+    TD_HEURISTIC_PREVIOUSLY_FAILED_ADDITIONAL,
 )
 
 from tools.testing.target_determination.heuristics.interface import (
@@ -37,8 +38,9 @@ def get_previous_failures() -> Set[str]:
         print(f"could not find path {path}")
         return set()
     with open(path) as f:
-        return python_test_file_to_test_name(
-            _parse_prev_failing_test_files(json.load(f))
+        return (
+            python_test_file_to_test_name(_parse_prev_failing_test_files(json.load(f)))
+            | read_additional_test_failures_file()
         )
 
 
@@ -54,3 +56,23 @@ def _parse_prev_failing_test_files(last_failed_tests: Dict[str, bool]) -> Set[st
             prioritized_tests.add(test_file)
 
     return prioritized_tests
+
+
+def gen_additional_test_failures_file(tests: List[str]) -> None:
+    # Segfaults usually result in no xml and some tests don't run through pytest
+    # (ex doctests).  In these cases, there will be no entry in the pytest
+    # cache, so we should generate a separate file for them and upload it to s3
+    # along with the pytest cache
+    with open(
+        REPO_ROOT / ".pytest_cache" / TD_HEURISTIC_PREVIOUSLY_FAILED_ADDITIONAL, "w"
+    ) as f:
+        json.dump(tests, f, indent=2)
+
+
+def read_additional_test_failures_file() -> Set[str]:
+    path = REPO_ROOT / ".pytest_cache" / TD_HEURISTIC_PREVIOUSLY_FAILED_ADDITIONAL
+    if not os.path.exists(path):
+        print(f"could not find path {path}")
+        return set()
+    with open(path) as f:
+        return set(json.load(f))
