@@ -169,6 +169,8 @@ inductor_skips["cpu"] = {
     "nn.functional.cosine_embedding_loss": {b8},  # flaky
     ("index_reduce", "prod"): {f16},  # flaky
     ("index_reduce", "mean"): {f16},  # flaky
+    # see https://github.com/pytorch/pytorch/issues/126449
+    "_unsafe_masked_index": {b8},
 }
 
 if IS_MACOS and IS_X86:
@@ -382,6 +384,8 @@ inductor_override_kwargs = {
     },
     ("std_mean.unbiased", "cuda", f16): {"reference_in_float": True},
     ("uniform", "cuda"): {"reference_in_float": True},
+    ("_unsafe_masked_index_put_accumulate", "cuda", f16): {"atol": 1e-4, "rtol": 0.01},
+    ("_unsafe_masked_index_put_accumulate", "cpu", f16): {"atol": 1e-4, "rtol": 0.01},
     # Following tests are failing with strict comparision but atol=1 is acceptable due roundings errors
     ("nn.functional.interpolate.bilinear", "cpu", u8): {"atol": 1, "rtol": 0},
     ("nn.functional.upsample_bilinear", "cpu", u8): {"atol": 1, "rtol": 0},
