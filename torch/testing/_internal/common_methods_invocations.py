@@ -11512,6 +11512,12 @@ def reference_flatten(input, start_dim=0, end_dim=-1):
     out_shape = in_shape[:start_dim] + (flatten_bit_dim,) + in_shape[end_dim + 1:]
     return np.reshape(input, out_shape)
 
+
+def sample_inputs_alias_copy(op_info, device, dtype, requires_grad, **kwargs):
+    yield SampleInput(make_tensor((S,), dtype=dtype, device=device, requires_grad=requires_grad))
+    yield SampleInput(make_tensor((), dtype=dtype, device=device, requires_grad=requires_grad))
+
+
 # Operator database (sorted alphabetically)
 op_db: List[OpInfo] = [
     UnaryUfuncInfo('abs',
@@ -20982,6 +20988,21 @@ op_db: List[OpInfo] = [
                 "TestJit",
                 "test_variant_consistency_jit",
                 device_type="cuda",
+            ),
+        ),
+    ),
+    OpInfo(
+        'alias_copy',
+        dtypes=all_types_and(torch.bool, torch.float16, torch.bfloat16),
+        supports_out=True,
+        sample_inputs_func=sample_inputs_alias_copy,
+        supports_fwgrad_bwgrad=True,
+        skips=(
+            # RuntimeError: aten::alias_copy hit the vmap fallback which is currently disabled
+            DecorateInfo(unittest.expectedFailure, 'TestVmapOperatorsOpInfoCPU', 'test_op_has_batch_rule_alias_copy_cpu_float32'),
+            DecorateInfo(unittest.expectedFailure, 'TestOperatorsCUDA', 'test_vmapvjp_has_batch_rule_alias_copy_cuda_float32'),
+            DecorateInfo(
+                unittest.expectedFailure, 'TestVmapOperatorsOpInfoCUDA', 'test_op_has_batch_rule_alias_copy_cuda_float32',
             ),
         ),
     ),
