@@ -2,6 +2,7 @@ import contextlib
 import functools
 import threading
 from typing import List, Optional, TYPE_CHECKING
+import logging
 
 import torch
 from torch._dynamo.external_utils import call_backward, call_hook, exec_final_callbacks
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 compiled_autograd_log = getArtifactLogger(__name__, "compiled_autograd")
 verbose_log = getArtifactLogger(__name__, "compiled_autograd_verbose")
 
+torch_log = logging.getLogger("torch")
 
 def snapshot_verbose_logging_enabled():
     return torch._logging._internal.log_state.is_artifact_enabled(
@@ -56,6 +58,7 @@ class AutogradCompilerInstance:
             shape_env=self.shape_env,
         )
         self.fx_tracer = PythonKeyTracer()
+        torch_log.warning(f"id(self.fx_tracer): {id(self.fx_tracer)}")
         self.proxy_mode = ProxyTorchDispatchMode(self.fx_tracer, "symbolic")
         self.hooks_proxy: Optional[Proxy] = None
 
@@ -70,7 +73,9 @@ class AutogradCompilerInstance:
     def begin_capture(self, inputs: List[torch.Tensor], sizes: List[int]):
         counters["compiled_autograd"]["captures"] += 1
         self.fx_tracer.root = torch.nn.Module()
+        torch_log.warning(f"id(self.fx_tracer.root): {id(self.fx_tracer.root)}")
         self.fx_tracer.graph = torch.fx.Graph(tracer_cls=PythonKeyTracer)
+        torch_log.warning(f"id(self.fx_tracer.graph): {id(self.fx_tracer.graph)}")
         self.fx_tracer.tensor_attrs = {}
         args_proxy = self.fx_tracer.create_proxy("placeholder", "inputs", (), {})
         sizes_proxy = self.fx_tracer.create_proxy("placeholder", "sizes", (), {})
@@ -330,6 +335,3 @@ def disable():
         if prior:
             compiled_autograd_enabled = True
         torch._C._dynamo.compiled_autograd.set_autograd_compiler(prior)
-
-
-_compiled_autograd_state_tls = threading.local()

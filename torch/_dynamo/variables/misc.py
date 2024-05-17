@@ -28,6 +28,8 @@ from .base import VariableTracker, MutableLocal
 from .functions import NestedUserFunctionVariable, UserFunctionVariable
 from .user_defined import is_standard_setattr, UserDefinedObjectVariable
 
+import logging
+torch_log = logging.getLogger("torch")
 
 class SuperVariable(VariableTracker):
     _nonvar_fields = {
@@ -633,6 +635,8 @@ class AutogradEngineVariable(UserDefinedObjectVariable):
         kwargs: "Dict[str, VariableTracker]",
     ) -> "VariableTracker":
         if name == "queue_callback":
+            torch_log.warning(f"id(tx): {id(tx)}")
+            torch_log.warning(f"dir(tx): {dir(tx)}")
             return variables.UserFunctionVariable(torch._dynamo.external_utils.queue_callback, source=self.source).call_function(
                 tx, args, kwargs
             )
